@@ -2055,6 +2055,75 @@
         setImportantIfNeeded(el, 'margin-bottom',
             (Math.round((targetGap - extra - parentPadBottom) * 10) / 10) + 'px');
     }
+
+    // =====================================================================
+    // --- ÚJ: a kártyás doboz alatti záró felirat (pl. "Ennek a feladatnak a
+    //     lezárásához keress meg egy trénert!") ---
+    // Ha a tartalomoszlopban a kártyás widget után már csak egy rövid felirat
+    // jön, akkor:
+    //  - a felirat a kártyás doboz alsó vonala FÖLÖTT ül, alatta HW_NOTE_GAP
+    //    (minimális) térközzel - nem a vonalon;
+    //  - a vonal alatt nem marad üres sáv: a kártyás doboz egészen a
+    //    tartalomoszlop aljáig (a "Jegyzet készítése" gombig) ér. A doboz
+    //    nagyobb lesz, a kártyákat továbbra is a saját (szürke) sávja görgeti.
+    // A margókat itt is úgy számoljuk, hogy ne függjenek a saját írásainktól
+    // (a doboz alja és a widget alja közötti távolság, a felirat magassága és
+    // alsó belső térköze egyike sem változik attól, amit beállítunk), így az
+    // eredmény stabil, nem ugrál.
+    // =====================================================================
+    const HW_NOTE_GAP = 6;            // a felirat és az alatta lévő vonal közötti térköz (px)
+    const HW_NOTE_MAX_HEIGHT = 200;   // ennél magasabb elemet nem tekintünk "záró feliratnak"
+    function hwTrailingNote(cardRoot) {
+        if (!cardRoot || cardRoot.matches(CARD_LIST_SELECTOR)) return null;
+        const parent = cardRoot.parentElement;
+        if (!parent || !parent.matches(HW_PAGE_COLUMN_SELECTOR) || parent.classList.contains('offcanvasorig')) return null;
+        const last = parent.lastElementChild;
+        if (!last || last === cardRoot || cardRoot.nextElementSibling !== last) return null;
+        if (last.matches(CARD_AREA_ROOT_SELECTOR) || last.querySelector(CARD_AREA_ROOT_SELECTOR)) return null;
+        if (!isElementVisible(last)) return null;
+        const lastRect = last.getBoundingClientRect();
+        if (lastRect.height > HW_NOTE_MAX_HEIGHT) return null;
+        const box = hwSizedBox(cardRoot);
+        if (!box || !isElementVisible(box)) return null;
+        return { parent: parent, last: last, box: box, lastRect: lastRect };
+    }
+    function hwColumnNote(col) {
+        const last = col.lastElementChild;
+        const card = last && last.previousElementSibling;
+        if (!card || !card.matches(CARD_AREA_ROOT_SELECTOR)) return null;
+        return hwTrailingNote(card);
+    }
+    // A felirat elhelyezése: a kártyás widget és a felirat alsó margója.
+    function hwPlaceTrailingNote(cardRoot, note, parentPadBottom) {
+        const panelBottom = note.box.getBoundingClientRect().bottom;
+        const below = cardRoot.getBoundingClientRect().bottom - panelBottom;   // a vonal alatti rész a widgeten belül
+        const trailing = trailingInnerSpace(note.last);                        // a felirat alatti belső térköz
+        const px = v => (Math.round(v * 10) / 10) + 'px';
+        // a felirat szövegének alja = a vonal - HW_NOTE_GAP
+        setImportantIfNeeded(cardRoot, 'margin-bottom', px(-below - HW_NOTE_GAP - note.lastRect.height + trailing));
+        // az oszlop tartalma pontosan a vonalnál érjen véget
+        setImportantIfNeeded(note.last, 'margin-bottom', px(-(trailing - HW_NOTE_GAP) - parentPadBottom));
+    }
+    // A kártyás doboz magassága: érjen le a tartalomoszlop aljáig.
+    function hwFillColumnWithCardBox(col, note) {
+        const cs = window.getComputedStyle(col);
+        const colBottom = col.getBoundingClientRect().bottom - (parseFloat(cs.borderBottomWidth) || 0);
+        const r = note.box.getBoundingClientRect();
+        const diff = colBottom - r.bottom;
+        if (Math.abs(diff) > 0.5) {
+            hwSetBoxHeight(note.box, Math.max(HW_MIN_BOX_HEIGHT, Math.round((r.height + diff) * 10) / 10));
+        }
+        hwBottomGapPenalty = 0;
+        // a felirat alatti (átlátszó) belső térköz miatt se lehessen legörgetni
+        setImportantIfNeeded(col, 'overflow-y', 'hidden');
+        if (col.scrollTop) col.scrollTop = 0;
+    }
+    function hwFitNoteColumns() {
+        hwPageColumns().forEach(col => {
+            try { const note = hwColumnNote(col); if (note) hwFillColumnWithCardBox(col, note); } catch (e) {}
+        });
+    }
+
     // Gombsor: olyan elem, aminek KIZÁRÓLAG gombok a gyerekei (pl. "Újra |
     // Csoport visszaállítása | Következő csoport").
     function isButtonRow(el) {
@@ -2136,10 +2205,13 @@
             const parent = cardRoot.parentElement;
             if (!parent || cardRoot.matches(CARD_LIST_SELECTOR)) return;
             const pcs = window.getComputedStyle(parent);
+            const parentPadBottom = parseFloat(pcs.paddingBottom) || 0;
+            // Záró felirat a kártyás doboz alatt: külön elhelyezés (lásd fent).
+            const note = hwTrailingNote(cardRoot);
+            if (note) { hwPlaceTrailingNote(cardRoot, note, parentPadBottom); return; }
             const base = parseFloat(pcs.paddingLeft) || parseFloat(pcs.paddingRight) || 0;
             if (base <= 0) return;
             const target = Math.max(0, base - hwBottomGapPenalty);
-            const parentPadBottom = parseFloat(pcs.paddingBottom) || 0;
             setCardRootBottomGap(cardRoot, target, parentPadBottom);
             const last = parent.lastElementChild;
             if (last && last !== cardRoot && isElementVisible(last)) {
@@ -2160,6 +2232,9 @@
             spacingFixApplying = true;
             try {
                 fixCardAreaSpacing();
+                // a záró feliratos oszlopok kitöltése még ugyanebben a képkockában,
+                // a kirajzolás előtt - így betöltéskor sem ugrik el semmi
+                hwFitNoteColumns();
             } finally {
                 setTimeout(() => { spacingFixApplying = false; }, 0);
             }
@@ -2275,6 +2350,9 @@
         return hwColumnOverflow(col);
     }
     function hwFitPageColumn(col) {
+        // Záró feliratos oldal: a kártyás doboz kitölti az oszlopot (lásd fent).
+        const note = hwColumnNote(col);
+        if (note) { hwFillColumnWithCardBox(col, note); return; }
         let over = hwColumnOverflow(col);
         if (Math.abs(over) > HW_FIT_TOLERANCE) {
             const boxes = hwShrinkBoxes(col);
