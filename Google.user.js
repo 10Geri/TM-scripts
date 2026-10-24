@@ -10,6 +10,7 @@
 // @match        https://www.google.com/webhp*
 // @match        https://www.google.hu/
 // @match        https://www.google.hu/webhp*
+// @match        https://docs.google.com/forms/*
 // @include      /^https:\/\/www\.google\.[a-z]{2,3}(\.[a-z]{2,3})?\/search([?#].*)?$/
 // @include      /^https:\/\/www\.google\.[a-z]{2,3}(\.[a-z]{2,3})?\/(webhp)?([?#].*)?$/
 // @grant        none
@@ -18,6 +19,40 @@
 
 (function () {
     'use strict';
+
+    /* ------------------------------------------------------------------ *
+     * Google Forms (kitolto es ellenorzo oldal): 1,5x szelesebb tartalom
+     *  Csak a docs.google.com/forms/ oldalakon fut - Docs, Sheets, Slides
+     *  stb. oldalakon semmit nem csinal.
+     *  Sima CSS, document-start-kor -> mar az elso kirajzolasnal a vegleges
+     *  szelesseg latszik, nincs utolagos atrendezodes.
+     * ------------------------------------------------------------------ */
+    if (location.hostname === 'docs.google.com') {
+        if (!/^\/forms\//.test(location.pathname)) return;
+        const FORMS_MULTIPLIER = 1.5;
+        const formsCss = `
+            .teQAzf {
+                width: calc(640px * ${FORMS_MULTIPLIER}) !important;
+                max-width: 90vw !important;
+            }
+            /* a fejlec-kep aranyosan novekszik a szelesseggel */
+            .KHCwJ.ErmvL {
+                height: calc(160px * ${FORMS_MULTIPLIER}) !important;
+                max-height: calc(22.5vw * ${FORMS_MULTIPLIER}) !important;
+            }
+            /* A kerdesekhez es kulon kep-blokkokhoz tartozo kepek mindig
+               kozepen. A kepek inline-block dobozok, igy ha tobb all egymas
+               mellett, az egesz sor egyben, egy szeles kepkent kerul kozepre. */
+            .gCouxf {
+                text-align: center !important;
+                justify-content: center !important;
+            }
+        `;
+        const injectForms = function () { addStyle('gm-google-forms-wide', formsCss); };
+        injectForms();
+        document.addEventListener('DOMContentLoaded', injectForms);
+        return;
+    }
 
     if (!/^www\.google\.[a-z]{2,3}(\.[a-z]{2,3})?$/.test(location.hostname)) return;
 
