@@ -663,9 +663,14 @@
     }
 
     /* ------------------------------------------------------------------ *
-     * Fordito kartya: 2x magasabb
+     * Fordito kartya: legalabb 2x magasabb, de a tartalommal egyutt no
+     *  Korabban fix "height"-et kapott, ezert hosszu szovegnel a tartalom
+     *  kilogott a kartyabol es rácsuszott az alatta levo blokkokra.
+     *  Most csak min-height van, a magassag "auto" -> a kartya mindig
+     *  akkora, amekkora a szovegnek kell, de soha nem kisebb a 2x-esnel.
      * ------------------------------------------------------------------ */
     const TRANSLATE_HEIGHT_MULTIPLIER = 2;
+    const TRANSLATE_BASE_ATTR = 'data-gm-translate-card-base-h';
 
     function findTranslateCards() {
         const textareas = Array.prototype.slice.call(document.querySelectorAll('textarea'));
@@ -694,15 +699,37 @@
     function widenTranslateWidget() {
         const found = findTranslateCards();
         if (!found) return;
+
+        /* 1. Elobb MINDEN kartya alapmagassagat lemerjuk, es csak utana
+              nyulunk hozzajuk. Kulonben a masodik kartyat mar a megnyujtott
+              sor magassagaval mernenk (ez okozta a 4x-es magassagot). */
+        const unmeasured = found.cards.filter(function (c) { return !c.hasAttribute(TRANSLATE_BASE_ATTR); });
+        if (unmeasured.length) {
+            const heights = unmeasured.map(function (c) { return c.getBoundingClientRect().height; });
+            unmeasured.forEach(function (c, i) { c.setAttribute(TRANSLATE_BASE_ATTR, String(heights[i])); });
+        }
+
+        /* 2. A kozos alap a legkisebb mert ertek -> mindket kartya ugyanakkora
+              minimumot kap, es a sor egy vonalban marad. */
+        let base = Infinity;
+        found.cards.forEach(function (c) {
+            const v = parseFloat(c.getAttribute(TRANSLATE_BASE_ATTR));
+            if (v > 0 && v < base) base = v;
+        });
+        if (!isFinite(base)) return;
+        const minH = Math.round(base * TRANSLATE_HEIGHT_MULTIPLIER) + 'px';
+
+        /* 3. Csak minimum magassag, a tenyleges magassag a tartalomtol fugg. */
         found.cards.forEach(function (card) {
-            const attr = card.getAttribute('data-gm-translate-card-base-h');
-            const base = attr !== null ? parseFloat(attr) : card.getBoundingClientRect().height;
-            if (attr === null) card.setAttribute('data-gm-translate-card-base-h', String(base));
-            if (!base || base <= 0) return;
-            const target = base * TRANSLATE_HEIGHT_MULTIPLIER;
-            card.style.setProperty('height', target + 'px', 'important');
-            card.style.setProperty('min-height', target + 'px', 'important');
-            card.style.setProperty('max-height', 'none', 'important');
+            if (card.style.getPropertyValue('min-height') !== minH) {
+                card.style.setProperty('min-height', minH, 'important');
+            }
+            if (card.style.getPropertyValue('height') !== 'auto') {
+                card.style.setProperty('height', 'auto', 'important');
+            }
+            if (card.style.getPropertyValue('max-height') !== 'none') {
+                card.style.setProperty('max-height', 'none', 'important');
+            }
         });
     }
 
