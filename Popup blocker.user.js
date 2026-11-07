@@ -65,6 +65,8 @@
 // @match        *://*.ok.ru/videoembed/*
 // @match        *://gobsao8u.com/*
 // @match        *://*.gobsao8u.com/*
+// @match        *://sorozatom.online/*
+// @match        *://*.sorozatom.online/*
 // @match        *://*/e/*
 // @run-at       document-start
 // @all-frames   true
