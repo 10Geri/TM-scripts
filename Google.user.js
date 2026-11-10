@@ -275,14 +275,16 @@
     }
 
     /* Elozetes CSS a mentett adatokbol: a :not(...) kizarja az egymasba
-       agyazott racsokat (azokat a JS kulon kezeli, ott nem kell oldalso sav). */
+       agyazott racsokat (azokat a JS kulon kezeli, ott nem kell oldalso sav).
+       A #center_col es a #rcnt kozott a Google mar egy "display: contents"
+       burkolot is hasznal, ezert itt leszarmazott-, nem gyerek-szelektor kell. */
     if (cache && PAGE_TYPE !== 'images' && PAGE_TYPE !== 'ai-mode') {
         const c = '.' + cache.cls;
         const g = Math.min(GUTTER_MAX, Math.max(sideMargin(), cache.gut));
         addStyle('gm-google-preset',
             c + ':not(' + c + ' ' + c + '){grid-template-columns:' +
             g + 'px repeat(' + (cache.n - 2) + ', minmax(0, 1fr)) ' + g + 'px !important;}' +
-            '#rcnt:not(:has(> #rhs)) > #center_col{grid-column: 2 / -2 !important;}');
+            '#rcnt:not(:has(#rhs)) #center_col{grid-column: 2 / -2 !important;}');
     }
 
     /* ------------------------------------------------------------------ *
@@ -320,13 +322,9 @@
         if (!(g0 >= 0) || !(g1 >= 0)) return 0;
         /* A ket szelso sav NEM feltetlenul egyforma! Szeles ablakban a Google
            a jobb oldalon helyet tart fenn a tudaspanelnek, ilyenkor a sablon
-           pl. "260px 36px*20 441px". Korabban itt szimmetriat vartunk, ezert
-           szeles ablakban EGYETLEN racsot sem ismertunk fel, es az egesz
-           tartalom a Google alap 652 px-es savjaban maradt (ez latszott a
-           fordito kartyanal). Keskenyebb ablakban (pl. ha a Claude oldalpanel
-           nyitva volt) a ket sav egyforma lett, ezert ott mukodott.
-           Eleg annyit megkovetelni, hogy legalabb az egyik szelso sav a
-           maradek helyet kapja, vagyis szelesebb legyen a belso savoknal. */
+           pl. "260px 36px*20 441px". Eleg annyit megkovetelni, hogy legalabb
+           az egyik szelso sav a maradek helyet kapja, vagyis szelesebb legyen
+           a belso savoknal. */
         if (Math.max(g0, g1) <= unit + 1) return 0;
         return t.length;
     }
@@ -366,14 +364,10 @@
     /* ------------------------------------------------------------------ *
      * Kilogas-ellenorzes
      *  Csak azt nezzuk, ami tenyleg latszik es tenyleg a bal szelen log ki:
-     *   - levelelem (nincs gyerekeleme) -> a belso paddinges burkolok nem
-     *     hizlaljak feleslegesen a margot,
+     *   - levelelem (nincs gyerekeleme),
      *   - van rajta tartalom (szoveg vagy grafika),
      *   - nem szelesebb a viewportnal (a teljes szelessegu hatterek nem
      *     szamitanak).
-     *  Ez a ket szures a lenyeg: korabban egy ures, 1900 px szeles
-     *  hatterdoboz es a logo kulso burkoloja is noveltette a savot, ezert
-     *  lett a ket szelen duplaakkora ures hely.
      * ------------------------------------------------------------------ */
     function neededGutter() {
         if (!document.querySelector('[' + MARK + ']')) return 0;
@@ -537,11 +531,26 @@
 
     /* ------------------------------------------------------------------ *
      * Ha nincs tudaspanel, a kozepso oszlop kapja a teljes szelesseget
+     *  A Google mostanaban egy "display: contents" burkoloba teszi a
+     *  #center_col-t. Ilyenkor a racs-szulo nem a kozvetlen szulo, ezert
+     *  a korabbi "parentElement" ellenorzes elbukott, es a kozepso oszlop
+     *  (benne a fordito kartya) a Google alap 12 savjaban maradt.
+     *  Most a "contents" burkolokat atlepjuk, es a valodi racs-szulot
+     *  nezzuk - a grid-column a contents burkolon at is ervenyesul.
      * ------------------------------------------------------------------ */
+    function layoutParent(el) {
+        let n = el.parentElement, guard = 0;
+        while (n && guard < 6 && getComputedStyle(n).display === 'contents') {
+            n = n.parentElement;
+            guard++;
+        }
+        return n;
+    }
+
     function adjustCenterSpan() {
         const cc = document.getElementById('center_col');
         if (!cc) return;
-        const host = cc.parentElement;
+        const host = layoutParent(cc);
         if (!host || !host.hasAttribute(MARK)) return;
         const rhs = document.getElementById('rhs');
         let hasRhs = false;
@@ -551,7 +560,7 @@
         }
         if (hasRhs) {
             if (cc.style.getPropertyValue('grid-column')) cc.style.removeProperty('grid-column');
-        } else {
+        } else if (cc.style.getPropertyValue('grid-column') !== '2 / -2') {
             cc.style.setProperty('grid-column', '2 / -2', 'important');
         }
     }
@@ -597,77 +606,111 @@
     }
 
     /* ------------------------------------------------------------------ *
-     * Kepek ful: nagyitott elonezeti panel
+     * Nagyitott kep-elonezet (Kepek ful es az Osszes ful is)
+     *  Ket hiba volt itt:
+     *   1. A Kepek fulon a panel jobbrol becsuszo animacioval nyilik
+     *      (transform: translateX(50%)). A jobb oldali hezagot a
+     *      getBoundingClientRect-tel, animacio KOZBEN mertuk, igy negativ
+     *      erteket kaptunk, es a panel kilogott a kepernyo jobb szelen.
+     *      Most a Google sajat (transzformacio nelkuli) left/width erteket
+     *      hasznaljuk, es a hezagot esszeru hatarok koze szoritjuk.
+     *   2. A kepre eroltetett "width: 100%; height: auto" miatt az allo
+     *      kepek magasabbak lettek a dobozuknal, es kilogtak belole. A
+     *      Google a kepet "object-fit: contain"-nel maga illeszti a panelbe,
+     *      ezert a kep meretebe mar nem nyulunk, csak azt biztositjuk, hogy
+     *      soha ne legyen nagyobb a dobozanal.
      * ------------------------------------------------------------------ */
+    const PREVIEW_GAP_ATTR = 'data-gm-preview-right-gap';
+    const PREVIEW_BASE_ATTR = 'data-gm-preview-base-w';
+    const PREVIEW_GAP_DEFAULT = 16;
+    const PREVIEW_GAP_MAX = 80;
+    const PREVIEW_MIN_LEFT = 16;
+
     function findImagePreviewPanel() {
-        const dialogs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], g-dialog'));
-        const visible = dialogs.filter(function (d) {
+        const dialogs = document.querySelectorAll('[role="dialog"], g-dialog');
+        let best = null, bestArea = 0;
+        for (let i = 0; i < dialogs.length; i++) {
+            const d = dialogs[i];
+            if (!d.querySelector('img')) continue;
             const r = d.getBoundingClientRect();
-            return r.width > 200 && r.height > 200 && d.querySelector('img') != null;
-        });
-        if (!visible.length) return null;
-        visible.sort(function (a, b) {
-            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-            return (rb.width * rb.height) - (ra.width * ra.height);
-        });
-        return visible[0];
+            if (r.width <= 200 || r.height <= 200) continue;
+            const area = r.width * r.height;
+            if (area > bestArea) { bestArea = area; best = d; }
+        }
+        return best;
+    }
+
+    function fitPreviewImages(panel) {
+        const imgs = panel.querySelectorAll('img.sFlh5c');
+        for (let i = 0; i < imgs.length; i++) {
+            const im = imgs[i];
+            /* korabbi verzio altal rarakott meretek eltavolitasa */
+            if (im.style.getPropertyValue('width') === '100%') im.style.removeProperty('width');
+            if (im.style.getPropertyValue('height') === 'auto') im.style.removeProperty('height');
+            if (im.style.getPropertyValue('max-height') === 'none') im.style.removeProperty('max-height');
+            if (im.style.getPropertyValue('max-width') !== '100%') im.style.setProperty('max-width', '100%', 'important');
+        }
     }
 
     function widenImageLightbox() {
         const panel = findImagePreviewPanel();
         if (!panel) return;
         const cs = getComputedStyle(panel);
-        const rect = panel.getBoundingClientRect();
+        const vw = document.documentElement.clientWidth || window.innerWidth;
 
         if (cs.position === 'fixed') {
-            let gapAttr = panel.getAttribute('data-gm-preview-right-gap');
-            let rightGap = gapAttr !== null ? parseFloat(gapAttr) : null;
-            if (rightGap === null) {
-                rightGap = window.innerWidth - (rect.left + rect.width);
-                panel.setAttribute('data-gm-preview-right-gap', String(rightGap));
+            /* Ha a Google ujra beallitotta a sajat (nem !important) left/width
+               erteket - pl. uj kep vagy atmeretezes -, abbol merunk ujra. */
+            const googleWrote = panel.style.getPropertyPriority('left') !== 'important';
+            if (googleWrote || !panel.hasAttribute(PREVIEW_GAP_ATTR)) {
+                let gl = parseFloat(panel.style.left);
+                let gw = parseFloat(panel.style.width);
+                if (!(gl >= 0) || !(gw > 0)) {
+                    /* offsetLeft/offsetWidth nem tartalmazza a transformot */
+                    gl = panel.offsetLeft;
+                    gw = panel.offsetWidth;
+                }
+                let gap = vw - (gl + gw);
+                if (!(gap >= 0 && gap <= PREVIEW_GAP_MAX)) gap = PREVIEW_GAP_DEFAULT;
+                panel.setAttribute(PREVIEW_GAP_ATTR, String(Math.round(gap)));
             }
-            const newWidth = Math.max(600, window.innerWidth * 0.62);
-            panel.style.setProperty('width', newWidth + 'px', 'important');
-            panel.style.setProperty('max-width', newWidth + 'px', 'important');
-            panel.style.setProperty('left', (window.innerWidth - newWidth - rightGap) + 'px', 'important');
+            const rightGap = parseFloat(panel.getAttribute(PREVIEW_GAP_ATTR)) || 0;
+            const room = vw - rightGap - PREVIEW_MIN_LEFT;
+            const newWidth = Math.round(Math.min(room, Math.max(600, vw * 0.62)));
+            const newLeft = Math.round(vw - newWidth - rightGap);
+            const w = newWidth + 'px', l = newLeft + 'px';
+            if (panel.style.getPropertyValue('width') !== w) panel.style.setProperty('width', w, 'important');
+            if (panel.style.getPropertyValue('max-width') !== w) panel.style.setProperty('max-width', w, 'important');
+            if (panel.style.getPropertyValue('left') !== l || googleWrote) panel.style.setProperty('left', l, 'important');
+            if (panel.style.getPropertyValue('right')) panel.style.setProperty('right', 'auto', 'important');
         } else {
-            let baseAttr = panel.getAttribute('data-gm-preview-base-w');
+            let baseAttr = panel.getAttribute(PREVIEW_BASE_ATTR);
             let baseWidth = baseAttr !== null ? parseFloat(baseAttr) : null;
             if (baseWidth === null) {
-                baseWidth = rect.width;
-                panel.setAttribute('data-gm-preview-base-w', String(baseWidth));
+                baseWidth = panel.offsetWidth;
+                panel.setAttribute(PREVIEW_BASE_ATTR, String(baseWidth));
             }
             if (!baseWidth || baseWidth <= 0) return;
-            const newWidth = Math.min(Math.max(600, window.innerWidth * 0.42), window.innerWidth * 0.6);
+            /* A panel balra no (negativ margin-left), a jobb szele helyben
+               marad. Bal oldalon se logjon ki a kepernyorol. */
+            let newWidth = Math.min(Math.max(600, vw * 0.42), vw * 0.6);
+            const rightEdge = panel.getBoundingClientRect().right;
+            newWidth = Math.min(newWidth, rightEdge - PREVIEW_MIN_LEFT);
             if (newWidth > baseWidth) {
-                panel.style.setProperty('width', newWidth + 'px', 'important');
-                panel.style.setProperty('max-width', newWidth + 'px', 'important');
-                panel.style.setProperty('margin-left', (baseWidth - newWidth) + 'px', 'important');
+                const w = Math.round(newWidth) + 'px';
+                if (panel.style.getPropertyValue('width') !== w) {
+                    panel.style.setProperty('width', w, 'important');
+                    panel.style.setProperty('max-width', w, 'important');
+                    panel.style.setProperty('margin-left', Math.round(baseWidth - newWidth) + 'px', 'important');
+                }
             }
         }
 
-        const imgs = Array.prototype.slice.call(panel.querySelectorAll('img.sFlh5c')).filter(function (im) {
-            const r = im.getBoundingClientRect();
-            return im.offsetParent !== null && r.width > 0 && r.height > 0;
-        });
-        if (!imgs.length) return;
-        imgs.sort(function (a, b) {
-            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-            return (rb.width * rb.height) - (ra.width * ra.height);
-        });
-        const img = imgs[0];
-        img.style.setProperty('width', '100%', 'important');
-        img.style.setProperty('height', 'auto', 'important');
-        img.style.setProperty('max-width', '100%', 'important');
-        img.style.setProperty('max-height', 'none', 'important');
+        fitPreviewImages(panel);
     }
 
     /* ------------------------------------------------------------------ *
      * Fordito kartya: legalabb 2x magasabb, de a tartalommal egyutt no
-     *  Korabban fix "height"-et kapott, ezert hosszu szovegnel a tartalom
-     *  kilogott a kartyabol es rácsuszott az alatta levo blokkokra.
-     *  Most csak min-height van, a magassag "auto" -> a kartya mindig
-     *  akkora, amekkora a szovegnek kell, de soha nem kisebb a 2x-esnel.
      * ------------------------------------------------------------------ */
     const TRANSLATE_HEIGHT_MULTIPLIER = 2;
     const TRANSLATE_BASE_ATTR = 'data-gm-translate-card-base-h';
@@ -701,16 +744,14 @@
         if (!found) return;
 
         /* 1. Elobb MINDEN kartya alapmagassagat lemerjuk, es csak utana
-              nyulunk hozzajuk. Kulonben a masodik kartyat mar a megnyujtott
-              sor magassagaval mernenk (ez okozta a 4x-es magassagot). */
+              nyulunk hozzajuk. */
         const unmeasured = found.cards.filter(function (c) { return !c.hasAttribute(TRANSLATE_BASE_ATTR); });
         if (unmeasured.length) {
             const heights = unmeasured.map(function (c) { return c.getBoundingClientRect().height; });
             unmeasured.forEach(function (c, i) { c.setAttribute(TRANSLATE_BASE_ATTR, String(heights[i])); });
         }
 
-        /* 2. A kozos alap a legkisebb mert ertek -> mindket kartya ugyanakkora
-              minimumot kap, es a sor egy vonalban marad. */
+        /* 2. A kozos alap a legkisebb mert ertek. */
         let base = Infinity;
         found.cards.forEach(function (c) {
             const v = parseFloat(c.getAttribute(TRANSLATE_BASE_ATTR));
@@ -1017,12 +1058,6 @@
      * ------------------------------------------------------------------ */
     let needRecheck = true;
 
-    /* A bal szelen a Google logo ul, reszben az oldalso savban. Ezt kulon,
-       olcson merjuk ki (#logo = maga a logo link, nem a paddinges burkoloja),
-       mert a logo kesobb is megjelenhet, mint ahogy a racsokat megtalaljuk -
-       egyetlen meres tehat keves.
-       A sajat eltolasunkat mindig visszaszamoljuk, igy a meres az EREDETI
-       helyzetet adja, es nem csuszik el korrol korre. */
     const LOGO_SHIFT = 'data-gm-logo-shift';
 
     function logoBox() {
@@ -1040,8 +1075,7 @@
         return Math.min(GUTTER_MAX, Math.ceil(gutterBase() + 8 - b.left));
     }
 
-    /* A logo a bal oldalso sav KOZEPEN alljon, ne a kepernyo szelehez tapadva:
-       egyforma legyen elotte es utana a hely. */
+    /* A logo a bal oldalso sav KOZEPEN alljon. */
     function centerLogo() {
         const b = logoBox();
         if (!b) return;
@@ -1056,9 +1090,6 @@
         b.el.style.setProperty('transform', 'translateX(' + shift + 'px)', 'important');
     }
 
-    /* A gyorsitotarat csak akkor irjuk, amikor az oldal mar leulepedett -
-       kulonben egy korai, meg hianyos meres ragadna be a kovetkezo
-       betoltesekre is. */
     let cacheTimer = null;
     function scheduleCacheSave() {
         clearTimeout(cacheTimer);
@@ -1083,9 +1114,6 @@
             if (!touched) widenViaVariables();
 
             if (touched) {
-                /* Minden korben: fer-e a logo. Ha nem, meg UGYANEBBEN a
-                   szinkron korben kiszelesitjuk a savot, igy a bongeszo
-                   mar a vegleges allapotot rajzolja ki. */
                 let fresh = freshGrids;
                 const want = logoNeed();
                 if (want > minGutter) {
@@ -1131,10 +1159,14 @@
         }, wait);
     }
 
-    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
-    /* Atmeretezeskor nullarol merunk ujra (igy a sav vissza is tud szukulni),
-       de meg ugyanabban a korben - az ablak ugyis atrendezodik, kulon
-       ugralas nem latszik. */
+    /* A kep-elonezetet a MutationObserver-bol, meg a kirajzolas elott
+       igazitjuk, igy a panel mar a vegleges meretben jelenik meg. */
+    new MutationObserver(function () {
+        if (PAGE_TYPE !== 'ai-mode') {
+            try { widenImageLightbox(); } catch (e) { /* a teljes kor ugyis lefut */ }
+        }
+        schedule();
+    }).observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('resize', function () { minGutter = 0; needRecheck = true; schedule(); });
     document.addEventListener('DOMContentLoaded', schedule);
     window.addEventListener('load', schedule);
