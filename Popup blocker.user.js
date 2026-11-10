@@ -63,6 +63,12 @@
 // @match        *://*.teresapoliticallearn.com/*
 // @match        *://ok.ru/videoembed/*
 // @match        *://*.ok.ru/videoembed/*
+// @match        *://rpmstream.live/*
+// @match        *://*.rpmstream.live/*
+// @match        *://abyssplayer.com/*
+// @match        *://*.abyssplayer.com/*
+// @match        *://byseraguci.com/*
+// @match        *://*.byseraguci.com/*
 // @match        *://gobsao8u.com/*
 // @match        *://*.gobsao8u.com/*
 // @match        *://sorozatom.online/*
@@ -111,7 +117,10 @@
         'hdmozi.hu',
         'photos.app.goo.gl',
         'teresapoliticallearn.com',
-        'gobsao8u.com'
+        'gobsao8u.com',
+        'sorozatom.online',
+        'abyssplayer.com',
+        'byseraguci.com'
     ];
 
     // true  = a target="_blank" linkek is blokkolva lesznek
@@ -192,6 +201,34 @@
     }
 
     /* ------------------------------------------------------------------
+     * 0/b) RPMSHARE (rpmstream.live) – a rejtett keretben lekérjük a
+     *      fájl valódi címét, és visszaküldjük a hdmozi oldalnak.
+     * ------------------------------------------------------------------ */
+    if (/(^|\.)rpmstream\.live$/i.test(location.hostname) &&
+        window.top !== window.self && location.hash.indexOf(OKRU_EXTRACT_HASH) !== -1) {
+        rpmExtract();
+        return;
+    }
+
+    function rpmExtract() {
+        let parentOrigin = '';
+        try { parentOrigin = new URL(document.referrer).origin; } catch (e) {}
+        if (!/^https?:\/\/([a-z0-9-]+\.)*hdmozi\.hu$/i.test(parentOrigin)) return;
+        // a saját lejátszójuk ne induljon el (és ne irányítson tovább)
+        try { window.stop(); } catch (e) {}
+        const send = (data) => {
+            try { window.parent.postMessage(Object.assign({ hdmoziPlain: 1 }, data), parentOrigin); } catch (e) {}
+        };
+        const id = location.hash.replace(/^#/, '').split('&')[0].trim();
+        const NOT_FOUND = 'Ez a forrás jelenleg nem elérhető – a tárhely szerint a videó nem található.';
+        if (!id) { send({ error: NOT_FOUND }); return; }
+        fetch('/api/public/resolve?file1=' + encodeURIComponent(id), { credentials: 'include' })
+            .then(r => r.ok ? r.json() : null)
+            .then(j => send(j && j.url ? { url: String(j.url) } : { error: NOT_FOUND }))
+            .catch(() => send({ error: NOT_FOUND }));
+    }
+
+    /* ------------------------------------------------------------------
      * Hol fusson? A listás domaineken, ÉS minden olyan beágyazott
      * lejátszóban (pl. vidara.to -> gobsao8u.com/e/...), amit egy listás
      * oldal tölt be – ezek domainje gyakran változik. A „*://*\/e/*”
@@ -206,6 +243,205 @@
         return hostMatches(hostOf(document.referrer));
     })();
     if (!hostMatches(location.hostname) && !inPlayerFrame) return;
+
+    /* ------------------------------------------------------------------
+     * „SANDBOXED IFRAME” HAMIS RIASZTÁS – egyes lejátszók (pl. morencius)
+     * a blokkoló miatt sandboxnak hiszik a keretet, és átirányítanak a
+     * /sandboxed.html oldalra. Ezt az átirányítást nem engedjük.
+     * ------------------------------------------------------------------ */
+    if (window.top !== window.self) {
+        try {
+            const nativeTimeout = window.setTimeout;
+            const fnSrc = Function.prototype.toString;
+            window.setTimeout = function (fn) {
+                try {
+                    if (typeof fn === 'function' && fnSrc.call(fn).indexOf('sandboxed.html') !== -1) {
+                        log('sandbox-átirányítás tiltva');
+                        return 0;
+                    }
+                } catch (e) {}
+                return nativeTimeout.apply(this, arguments);
+            };
+        } catch (e) {}
+    }
+
+    /* ------------------------------------------------------------------
+     * VIDEA – a hdmozi rejtett keretben tölti be a videa lejátszót; innen
+     * kiolvassuk a videó közvetlen (mp4/webm) linkjeit, és visszaküldjük,
+     * hogy a hdmozi oldalon sima <video>-ban játszódjon le.
+     * Ha a „?v=…” azonosítóval a videó nem ágyazható be, a videa saját
+     * „?f=…” azonosítójával kérjük le (azzal megy).
+     * ------------------------------------------------------------------ */
+    const IS_VIDEA_FRAME = /(^|\.)videa\.hu$/i.test(location.hostname) &&
+        window.top !== window.self && location.pathname === '/player';
+    if (IS_VIDEA_FRAME) {
+        if (location.hash.indexOf(OKRU_EXTRACT_HASH) !== -1) videaExtract();
+        else videaFix();
+    }
+
+    // a videa lejátszó adatai (XML) – a videa saját titkosítását visszafejtve
+    async function videaInfo(params) {
+        const SEC = 'xHb0ZvME5q8CBcoQi6AngerDu3FGO9fkUlwPmLVY_RTzj2hJIS4NasXWKy1td7p';
+        const qs = new URLSearchParams(params).toString();
+        const html = await (await fetch('/player?' + qs, { credentials: 'include' })).text();
+        const m = html.match(/_xt\s*=\s*"([^"]+)"/);
+        if (!m) throw new Error('nincs nonce');
+        const l = m[1].slice(0, 32), s = m[1].slice(32);
+        let key = '';
+        for (let i = 0; i < 32; i++) {
+            let idx = i - (SEC.indexOf(l[i]) - 31);
+            if (idx < 0) idx += s.length;
+            key += s[idx];
+        }
+        const seed = Math.random().toString(36).slice(2, 10);
+        const r = await fetch('/player/xml?' + new URLSearchParams(Object.assign({ platform: 'desktop' }, params, {
+            _s: seed, _t: key.slice(0, 16), start: '0'
+        })), { credentials: 'include' });
+        let xml = await r.text();
+        if (!xml.startsWith('<?xml')) {
+            // RC4 visszafejtés
+            const k = key.slice(16) + seed + (r.headers.get('x-videa-xs') || '');
+            const data = atob(xml);
+            const S = Array.from({ length: 256 }, (_, i) => i);
+            let j = 0;
+            for (let i = 0; i < 256; i++) {
+                j = (j + S[i] + k.charCodeAt(i % k.length)) % 256;
+                [S[i], S[j]] = [S[j], S[i]];
+            }
+            const out = new Uint8Array(data.length);
+            let a = 0; j = 0;
+            for (let n = 0; n < data.length; n++) {
+                a = (a + 1) % 256;
+                j = (j + S[a]) % 256;
+                [S[a], S[j]] = [S[j], S[a]];
+                out[n] = data.charCodeAt(n) ^ S[(S[a] + S[j]) % 256];
+            }
+            xml = new TextDecoder().decode(out);
+        }
+        return new DOMParser().parseFromString(xml, 'text/xml');
+    }
+
+    // „?v=…” nem beágyazható -> a videa „?f=…” azonosítója (vagy '')
+    async function videaFId(d) {
+        const err = d.querySelector('error');
+        if (!err || d.querySelector('video_sources')) return '';
+        const page = (err.textContent || '').trim();
+        if (!/^https?:\/\/([a-z0-9-]+\.)*videa\.hu\//i.test(page)) return '';
+        const ph = await (await fetch(page, { credentials: 'include' })).text();
+        const fm = ph.match(/player\?f=([0-9.]+)/);
+        return fm ? fm[1] : '';
+    }
+
+    // látható keret: ha kell, átváltunk a „?f=…” lejátszóra
+    async function videaFix() {
+        try {
+            const sp = new URLSearchParams(location.search);
+            if (!sp.get('v') || sp.get('f')) return;
+            const f = await videaFId(await videaInfo({ v: sp.get('v'), lang: 'hu' }));
+            if (f) location.replace('/player?f=' + f + '&lang=hu');
+        } catch (e) { log('videa hiba', e); }
+    }
+
+    // rejtett keret: közvetlen linkek visszaküldése a hdmozi oldalnak
+    async function videaExtract() {
+        let parentOrigin = '';
+        try {
+            const ao = location.ancestorOrigins;
+            parentOrigin = ao && ao.length ? ao[0] : new URL(document.referrer).origin;
+        } catch (e) {}
+        if (!/^https?:\/\/([a-z0-9-]+\.)*hdmozi\.hu$/i.test(parentOrigin)) return;
+        // a videa saját lejátszója itt nem kell
+        try { window.stop(); } catch (e) {}
+        const send = (data) => {
+            try { window.parent.postMessage(Object.assign({ hdmoziPlain: 1 }, data), parentOrigin); } catch (e) {}
+        };
+        try {
+            const sp = new URLSearchParams(location.search);
+            const base = sp.get('f') ? { f: sp.get('f') } : { v: sp.get('v') };
+            let d = await videaInfo(Object.assign({}, base, { lang: 'hu' }));
+            if (!d.querySelector('video_sources')) {
+                const f = await videaFId(d);
+                if (f) d = await videaInfo({ f, lang: 'hu' });
+            }
+            const probe = document.createElement('video');
+            const hv = d.querySelector('hash_values');
+            const videos = Array.from(d.querySelectorAll('video_sources > video_source')).map(x => {
+                const name = x.getAttribute('name') || '';
+                const text = (x.textContent || '').trim();
+                if (!name || !text) return null;
+                const mime = x.getAttribute('mimetype') || 'video/mp4';
+                const codecs = x.getAttribute('codecs');
+                if (!probe.canPlayType(mime + (codecs ? '; codecs="' + codecs + '"' : ''))) return null;
+                const u = new URL(text, 'https://videa.hu/');
+                const h = hv && hv.querySelector('hash_value_' + name);
+                const exp = x.getAttribute('exp');
+                if (h && exp) {
+                    u.searchParams.set('md5', h.textContent.trim());
+                    u.searchParams.set('expires', exp);
+                }
+                return { name, url: u.href, h: parseInt(x.getAttribute('height'), 10) || parseInt(name, 10) || 0 };
+            }).filter(Boolean).sort((a, b) => b.h - a.h).map(({ name, url }) => ({ name, url, type: 'mp4' }));
+            const ps = d.querySelector('poster_src');
+            const poster = ps && ps.textContent.trim() ? new URL(ps.textContent.trim(), 'https://videa.hu/').href : '';
+            send(videos.length ? { videos, poster } : { error: 'videa: nincs lejátszható forrás' });
+        } catch (e) {
+            send({ error: 'videa: ' + e.message });
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * JWPLAYER-ES LEJÁTSZÓK (morencius, streamwish, filelions…) – a hdmozi
+     * rejtett keretben tölti be őket; kiolvassuk a videó közvetlen linkjét,
+     * hogy a hdmozi oldalon sima <video>-ban játszódjon le.
+     * ------------------------------------------------------------------ */
+    if (window.top !== window.self && location.hash.indexOf(OKRU_EXTRACT_HASH) !== -1 && !IS_VIDEA_FRAME) {
+        jwExtract();
+    }
+
+    function jwExtract() {
+        let parentOrigin = '';
+        try {
+            const ao = location.ancestorOrigins;
+            parentOrigin = ao && ao.length ? ao[0] : new URL(document.referrer).origin;
+        } catch (e) {}
+        if (!/^https?:\/\/([a-z0-9-]+\.)*hdmozi\.hu$/i.test(parentOrigin)) return;
+
+        let done = false;
+        const send = (data) => {
+            if (done) return;
+            done = true;
+            try { window.parent.postMessage(Object.assign({ hdmoziPlain: 1 }, data), parentOrigin); } catch (e) {}
+        };
+        const started = Date.now();
+        const tick = () => {
+            if (done) return;
+            try {
+                const jw = window.jwplayer && window.jwplayer();
+                const item = jw && jw.getPlaylistItem && jw.getPlaylistItem();
+                const srcs = item && (item.sources || (item.file ? [{ file: item.file }] : []));
+                if (srcs && srcs.length) {
+                    const videos = srcs.filter(s => s && s.file).map(s => ({
+                        name: String(s.label || ''),
+                        url: new URL(String(s.file), location.href).href,
+                        type: String(s.type || '')
+                    }));
+                    if (videos.length) {
+                        try { jw.stop(); jw.setMute(true); } catch (e) {}
+                        send({ videos, poster: item.image ? new URL(String(item.image), location.href).href : '' });
+                        return;
+                    }
+                }
+            } catch (e) {}
+            const el = Date.now() - started;
+            // nincs jwplayer az oldalon -> gyorsan feladjuk, ne várjon feleslegesen
+            if (el > 12000 || (el > 3000 && document.readyState === 'complete' && !window.jwplayer)) {
+                send({ error: 'nincs jwplayer' });
+                return;
+            }
+            setTimeout(tick, 250);
+        };
+        tick();
+    }
 
     /* ------------------------------------------------------------------
      * 1) ÖNBEZÁRÁS – ha ezt az ablakot egy másik player oldal nyitotta,
@@ -228,15 +464,15 @@
     }
 
     /* ------------------------------------------------------------------
-     * HDMOZI FILMOLDAL – az oldal marad, csak a film helyére (pontosan
-     * az eredeti lejátszó helyére és méretére) kerül egy sima <video>.
-     * Az oldal saját forráslistája (alul) is ezt a lejátszót vezérli.
-     * A külső reklámscriptek nem töltődnek be.
+     * HDMOZI FILM- ÉS SOROZATRÉSZ-OLDAL – az oldal marad, csak a videó
+     * helyére (pontosan az eredeti lejátszó helyére és méretére) kerül
+     * egy sima <video>. Az oldal saját forráslistája (alul) is ezt a
+     * lejátszót vezérli. A külső reklámscriptek nem töltődnek be.
      * Eredeti lejátszó: a sáv „Eredeti lejátszó” linkje (#eredeti).
      * ------------------------------------------------------------------ */
     if (/(^|\.)hdmozi\.hu$/i.test(location.hostname) &&
         window.top === window.self &&
-        /^\/movies\/[^/]+/i.test(location.pathname) &&
+        /^\/(movies|episodes)\/[^/]+/i.test(location.pathname) &&
         location.hash !== '#eredeti') {
         hdmoziPlain();
     }
@@ -394,7 +630,8 @@
             video.style.display = 'none';
             msg('');
             frameEl = document.createElement('iframe');
-            frameEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+            // NINCS sandbox: a lejátszók (abyss, morencius…) észlelik és nem indulnak.
+            // A popupokat a keretben futó saját példányunk blokkolja.
             frameEl.setAttribute('allowfullscreen', '');
             frameEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
             frameEl.setAttribute('referrerpolicy', 'origin');
@@ -402,14 +639,14 @@
             box.insertBefore(frameEl, msgEl);
         }
 
-        // --- ok.ru: rejtett keretben kiolvassuk a közvetlen linkeket ---
+        // --- ok.ru / rpmshare: rejtett keretben kiolvassuk a közvetlen linkeket ---
         const okruCache = {};
-        function okruResolve(url) {
+        function okruResolve(url, frameSrc, waitMs) {
             if (okruCache[url]) return okruCache[url];
             okruCache[url] = new Promise((resolve) => {
                 const f = document.createElement('iframe');
                 f.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;border:0;visibility:hidden';
-                f.src = url.split('#')[0] + '#' + OKRU_EXTRACT_HASH;
+                f.src = frameSrc || (url.split('#')[0] + '#' + OKRU_EXTRACT_HASH);
                 let timer = 0;
                 const finish = (res) => {
                     clearTimeout(timer);
@@ -423,7 +660,7 @@
                     finish(e.data);
                 };
                 window.addEventListener('message', onMsg);
-                timer = setTimeout(() => finish({ error: 'Az ok.ru nem válaszolt.' }), 20000);
+                timer = setTimeout(() => finish({ error: 'A videó tárhelye nem válaszolt.' }), waitMs || 20000);
                 document.body.appendChild(f);
             });
             return okruCache[url];
@@ -431,21 +668,60 @@
 
         const kindOf = (url) => {
             if (/\.(mp4|webm|m4v|ogv)(\?|#|$)/i.test(url)) return 'direct';
+            if (/\.m3u8(\?|#|$)/i.test(url) && video.canPlayType('application/vnd.apple.mpegurl')) return 'direct';
             if (/^https?:\/\/([a-z0-9-]+\.)*ok\.ru\/videoembed\//i.test(url)) return 'okru';
+            if (/^https?:\/\/([a-z0-9-]+\.)*rpmstream\.live\//i.test(url)) return 'rpm';
             return 'frame';
         };
+
+        // keretes lejátszó -> közvetlen linkek (vagy null)
+        const extractFailed = {};
+        async function extractFrame(src) {
+            if (extractFailed[src.url]) return null;
+            // ezek nem jwplayeresek, a saját keretük kell
+            if (/^https?:\/\/([a-z0-9-]+\.)*(abyssplayer\.com)\//i.test(src.url)) return null;
+            const r = await okruResolve(src.url, src.url.split('#')[0] + '#' + OKRU_EXTRACT_HASH, 15000);
+            const hlsOk = !!video.canPlayType('application/vnd.apple.mpegurl');
+            const list = (r.videos || []).filter(v =>
+                /^https?:\/\//i.test(v.url) &&
+                ((/hls|m3u8/i.test(v.type) || /\.m3u8(\?|#|$)/i.test(v.url)) ? hlsOk : true));
+            if (!list.length) { extractFailed[src.url] = 1; return null; }
+            return { list, poster: r.poster };
+        }
 
         // true = sikerült videót mutatni
         async function play(src) {
             const my = ++token;
             if (src.kind === 'direct') { showVideo([{ name: '', url: src.url }], pagePoster); return true; }
-            if (src.kind === 'frame') { showFrame(src.url); return true; }
 
             stopVideo();
             clearFrame();
             video.style.display = '';
             qBox.textContent = '';
             msg('Betöltés…');
+
+            // egyéb lejátszó: rejtett keretben megpróbáljuk kiolvasni a közvetlen
+            // linket (jwplayer); ha nem megy, marad a lejátszó saját kerete
+            if (src.kind === 'frame') {
+                const r = await extractFrame(src);
+                if (my !== token) return true;
+                if (r) { showVideo(r.list, r.poster || pagePoster); return true; }
+                showFrame(src.url);
+                return true;
+            }
+
+            if (src.kind === 'rpm') {
+                const id = (src.url.split('#')[1] || '').split('&')[0];
+                const r = await okruResolve(src.url, src.url.split('#')[0] + '#' + id + '&' + OKRU_EXTRACT_HASH);
+                if (my !== token) return true;
+                if (!r.url) { msg(r.error || 'Ezen a forráson nincs lejátszható videó.'); return false; }
+                const k = kindOf(r.url);
+                if (k === 'direct') { showVideo([{ name: '', url: r.url }], pagePoster); return true; }
+                if (k === 'okru') return play({ url: r.url, kind: 'okru' });
+                showFrame(r.url);
+                return true;
+            }
+
             const res = await okruResolve(src.url);
             if (my !== token) return true;
             const list = (res.videos || []).slice().sort((a, b) => qRank(a.name) - qRank(b.name));
@@ -554,13 +830,34 @@
                 srcButtons[s.nume] = makeBtn(srcBox, label, () => { markLi(s.li); play(s); });
             });
 
-            // automatikus választás: előbb a sima videóként lejátszhatók, végül keret
-            const order = sources.slice().sort((a, b) => (a.kind === 'frame') - (b.kind === 'frame'));
-            for (const s of order) {
+            // automatikus választás: előbb a közvetlenül lejátszhatók (mp4, ok.ru, rpmshare)…
+            for (const s of sources.filter(x => x.kind !== 'frame')) {
                 markBtn(s.nume);
                 markLi(s.li);
                 if (await play(s)) return;
             }
+            // …aztán a keretes lejátszók: egyszerre próbáljuk mindet, az első
+            // sikeres közvetlen link nyer; ha egyik sem, az első saját kerete
+            const frames = sources.filter(x => x.kind === 'frame');
+            if (!frames.length) return;
+            const my = ++token;
+            stopVideo();
+            clearFrame();
+            video.style.display = '';
+            msg('Betöltés…');
+            const won = await new Promise((resolve) => {
+                let left = frames.length;
+                frames.forEach(s => extractFrame(s).then(r => {
+                    if (r) resolve({ s, r });
+                    else if (--left === 0) resolve(null);
+                }));
+            });
+            if (my !== token) return;
+            const pick = won ? won.s : frames[0];
+            markBtn(pick.nume);
+            markLi(pick.li);
+            if (won) showVideo(won.r.list, won.r.poster || pagePoster);
+            else showFrame(pick.url);
         };
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', start, { once: true });
@@ -606,26 +903,75 @@
         });
     };
 
-    // --- 2/b: window.open kiiktatása ---
+    // _blank-szerű cél? (_blank, vagy egy nem létező, új ablakot nyitó név)
+    const isBlankTarget = (t) => {
+        t = String(t || '').trim();
+        if (!t) return false;
+        if (/^_blank$/i.test(t)) return true;
+        if (/^_(self|parent|top)$/i.test(t)) return false;
+        // elnevezett cél: csak akkor engedjük, ha ilyen nevű keret létezik
+        try { return !document.querySelector('iframe[name="' + t.replace(/"/g, '') + '"],frame[name="' + t.replace(/"/g, '') + '"]'); } catch (e) { return true; }
+    };
+    const isLinkEl = (el) => !!el && typeof el.tagName === 'string' && /^(A|AREA)$/i.test(el.tagName);
+
+    // --- 2/b: window.open kiiktatása (a saját és a gyerek-keretek ablakában is) ---
     const blockedOpen = function (url) {
         log('window.open blokkolva:', url);
         return makeFakeWindow();
     };
-    try {
-        Object.defineProperty(window, 'open', {
-            value: blockedOpen,
-            writable: false,
-            configurable: false
-        });
-    } catch (e) {
-        try { window.open = blockedOpen; } catch (e2) {}
-    }
+    const lockOpen = (w) => {
+        try {
+            Object.defineProperty(w, 'open', { value: blockedOpen, writable: false, configurable: false });
+        } catch (e) {
+            try { w.open = blockedOpen; } catch (e2) {}
+        }
+    };
+    lockOpen(window);
 
-    // --- 2/c: programozott a.click() target="_blank"-kel ---
+    // A reklámscriptek gyakran egy friss about:blank iframe-ből veszik elő
+    // az eredeti window.open-t – azt is lecseréljük.
+    const patchChild = (w) => {
+        try {
+            if (!w || w === window || w.__pbPatched) return;
+            if (w.open === blockedOpen) return;
+            lockOpen(w);
+            try { Object.defineProperty(w, '__pbPatched', { value: true }); } catch (e) {}
+            try {
+                const wc = w.HTMLElement && w.HTMLElement.prototype.click;
+                if (wc) w.HTMLElement.prototype.click = HTMLElement.prototype.click;
+                if (w.EventTarget) w.EventTarget.prototype.dispatchEvent = EventTarget.prototype.dispatchEvent;
+                if (w.HTMLFormElement) w.HTMLFormElement.prototype.submit = HTMLFormElement.prototype.submit;
+            } catch (e) {}
+        } catch (e) { /* idegen eredetű keret: ott a saját példányunk fut */ }
+    };
+    [HTMLIFrameElement, typeof HTMLFrameElement !== 'undefined' ? HTMLFrameElement : null,
+     HTMLObjectElement].forEach(C => {
+        if (!C) return;
+        try {
+            const dw = Object.getOwnPropertyDescriptor(C.prototype, 'contentWindow');
+            if (dw && dw.get) Object.defineProperty(C.prototype, 'contentWindow', {
+                configurable: true, enumerable: dw.enumerable,
+                get() { const w = dw.get.call(this); patchChild(w); return w; }
+            });
+            const dd = Object.getOwnPropertyDescriptor(C.prototype, 'contentDocument');
+            if (dd && dd.get) Object.defineProperty(C.prototype, 'contentDocument', {
+                configurable: true, enumerable: dd.enumerable,
+                get() { const d = dd.get.call(this); if (d) patchChild(d.defaultView); return d; }
+            });
+        } catch (e) {}
+    });
+    // window.frames[i] / window[i] úton elért keretek
+    try {
+        new MutationObserver(() => {
+            for (let i = 0; i < window.length; i++) patchChild(window[i]);
+        }).observe(document, { childList: true, subtree: true });
+    } catch (e) {}
+
+    // --- 2/c: programozott a.click() új ablakba ---
     try {
         const nativeClick = HTMLElement.prototype.click;
         HTMLElement.prototype.click = function () {
-            if (this instanceof HTMLAnchorElement && /^_blank$/i.test(this.target || '')) {
+            if (isLinkEl(this) && isBlankTarget(this.target)) {
                 log('programozott _blank kattintás blokkolva:', this.href);
                 return;
             }
@@ -633,11 +979,30 @@
         };
     } catch (e) {}
 
+    // --- 2/c2: dispatchEvent(new MouseEvent('click')) egy (akár a dokumentumba
+    //     be sem tett) linken – ez a document szintű figyelőnket megkerülné ---
+    try {
+        const nativeDispatch = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function (ev) {
+            try {
+                if (ev && /^(click|auxclick|mouseup)$/i.test(ev.type)) {
+                    const a = isLinkEl(this) ? this :
+                        (this && this.closest ? this.closest('a[target],area[target]') : null);
+                    if (a && isBlankTarget(a.target)) {
+                        log('szintetikus _blank kattintás blokkolva:', a.href);
+                        return false;
+                    }
+                }
+            } catch (e) {}
+            return nativeDispatch.apply(this, arguments);
+        };
+    } catch (e) {}
+
     // --- 2/d: form submit új ablakba ---
     try {
         const nativeSubmit = HTMLFormElement.prototype.submit;
         HTMLFormElement.prototype.submit = function () {
-            if (/^_blank$/i.test(this.target || '')) {
+            if (isBlankTarget(this.target)) {
                 log('form submit _blank blokkolva');
                 return;
             }
@@ -647,7 +1012,7 @@
 
     document.addEventListener('submit', function (e) {
         const f = e.target;
-        if (f && /^_blank$/i.test(f.target || '')) {
+        if (f && isBlankTarget(f.target)) {
             e.preventDefault();
             e.stopImmediatePropagation();
             log('submit esemény blokkolva');
@@ -658,11 +1023,11 @@
     if (BLOCK_BLANK_LINKS) {
         const clickGuard = function (e) {
             // Ctrl / Cmd / Shift / középső gomb: szándékos új fül -> engedjük
-            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
+            if (e.isTrusted && (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1)) return;
 
             const a = e.target && e.target.closest ? e.target.closest('a[target], area[target]') : null;
             if (!a) return;
-            if (!/^_blank$/i.test(a.target || '')) return;
+            if (!isBlankTarget(a.target)) return;
 
             const href = a.getAttribute('href') || '';
             if (!href || href.startsWith('#') || /^javascript:/i.test(href)) return;
@@ -679,7 +1044,7 @@
     // --- 2/f: <base target="_blank"> semlegesítése ---
     const fixBase = () => {
         document.querySelectorAll('base[target]').forEach(b => {
-            if (/^_blank$/i.test(b.target)) b.removeAttribute('target');
+            if (isBlankTarget(b.target)) b.removeAttribute('target');
         });
     };
     try {
